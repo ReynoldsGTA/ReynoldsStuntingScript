@@ -1,4 +1,4 @@
-#include "plugin.h"
+﻿#include "plugin.h"
 #include "CPed.h"
 #include "CBike.h"
 #include "CVehicle.h"
@@ -7,7 +7,13 @@
 #include "CWorld.h"
 #include "CCheat.h"
 #include "CTimer.h"
+#include "CFont.h"
+#include "CStreaming.h"
+#include "CModelInfo.h"
 #include "extensions/ScriptCommands.h"
+#include "CWeather.h"
+
+
 using namespace plugin;
 
 struct PositionedVehicle {
@@ -33,6 +39,8 @@ public:
     static CVehicle* m_vehicle;
     static CVehicle* m_lastVehicle;
 
+    static CVector m_oldPos;
+
     static float m_pedDensity;
 
     static bool m_jetPackMode;
@@ -40,6 +48,11 @@ public:
 
     static bool m_posVehicleStored;
     static PositionedVehicle m_posVehicle;
+
+    static unsigned m_currentFrame;
+
+    static float m_speeds[5];
+
 
     static void savePosition(CPed* player, CVehicle* vehicle, SavedPosition& savePos) {
         if (vehicle) {
@@ -68,13 +81,14 @@ public:
 
     /*This does not get a proper offset*/
     static void spawnVehicle(int model, float x, float y) {
-        //Command<Commands::REQUEST_MODEL>();
-        //Command<Commands::LOAD_ALL_MODELS_NOW>();
+        Command<Commands::REQUEST_MODEL>(model);
+        Command<Commands::LOAD_ALL_MODELS_NOW>();
         float a, b, c;
         Command<Commands::GET_OFFSET_FROM_CHAR_IN_WORLD_COORDS>(m_player, x, y, 0.0, &a, &b, &c);
         CVehicle* veh;
         Command<Commands::CREATE_CAR>(model, a, b, c, veh);
     }
+
 
 
     static void processJetPack() {
@@ -114,14 +128,33 @@ public:
     }
 
     static void rememberVehicle(CVehicle* vehicle) {
+        int model;
+        CVector pos;
+        float heading;
         if (vehicle) {
-            vehicle->m_nVehicleFlags.bEngineOn = true;
-            Command<Commands::DONT_REMOVE_CAR>(vehicle);
+            model = vehicle->m_nModelIndex;
+            pos = vehicle->GetPosition();
+            heading = vehicle->GetHeading();
+
+            Command<Commands::REQUEST_MODEL>(model);
+            Command<Commands::LOAD_ALL_MODELS_NOW>();
+
+            CVehicle* veh = nullptr;
+            Command<Commands::CREATE_CAR>(model, pos.x, pos.y, pos.z, veh);
+
+            Command<Commands::WARP_CHAR_FROM_CAR_TO_COORD>(m_player, pos.x, pos.y, pos.z);
+            
+            if (veh) {
+                veh->SetPosn(pos);
+                veh->SetHeading(heading);
+                Command<Commands::WARP_CHAR_INTO_CAR>(m_player, veh);
+                Command<Commands::RESTORE_CAMERA_JUMPCUT>();
+            }
+            
         }
     }
 
     static void setPositionedVehicle(CVehicle* vehicle) {
-        Command<Commands::DONT_REMOVE_CAR>(vehicle);
         m_posVehicle.vehicle = vehicle;
         m_posVehicle.position = vehicle->GetPosition();
         m_posVehicle.heading = vehicle->GetHeading();
@@ -136,7 +169,51 @@ public:
                 positionedVehicle.vehicle->SetHeading(positionedVehicle.heading);
                 positionedVehicle.vehicle->m_nVehicleFlags.bEngineOn = true;
             }
+            else {
+                CHud::SetHelpMessage("Vehicle Gone!", true, false, false);
+            }
         }
+    }
+
+    static void addNitroToCar() {
+        if (m_vehicle) {
+            Command<Commands::SET_CAR_HYDRAULICS>(m_vehicle, 1);
+            Command<Commands::GIVE_NON_PLAYER_CAR_NITRO>(m_vehicle);
+            m_vehicle->m_nNitroBoosts = 10;
+        }
+    }
+
+    static void toggleJetPack() {
+        m_jetPackMode = !m_jetPackMode;
+        //Command<Commands::FREEZE_CHAR_POSITION>(m_player, m_jetPackMode);
+        Command<Commands::FREEZE_CHAR_POSITION_AND_DONT_LOAD_COLLISION>(m_player, m_jetPackMode);
+        if (m_jetPackMode) {
+            CHud::SetHelpMessage("Jetpack On", true, false, false);
+        }
+        else {
+            CHud::SetHelpMessage("Jetpack Off", true, false, false);
+        }
+    }
+
+    static void toggleGhostTown() {
+        m_ghostTown = !m_ghostTown;
+        if (m_ghostTown) {
+            m_pedDensity = 0.0f;
+            CHud::SetHelpMessage("Ghosttown On", true, false, false);
+        }
+        else {
+            m_pedDensity = 1.0f;
+            CHud::SetHelpMessage("Ghosttown Off", true, false, false);
+        }
+    }
+
+    static void popTire(eWheels wheel) {
+        Command<Commands::BURST_CAR_TYRE>(m_vehicle, wheel);
+        CHud::SetHelpMessage("Popped tire", true, false, false);
+    }
+
+    static void changeWeather() {
+        Command<Commands::FORCE_WEATHER>(eWeatherType::WEATHER_SUNNY_LA);
     }
 
     static void process() {
@@ -146,13 +223,15 @@ public:
 
         if (m_vehicle) {
             m_lastVehicle = m_vehicle;
-            m_vehicle->m_fHealth = 1000.0;
+            m_vehicle->m_fHealth = 1000.0; 
+
         } 
         Command<Commands::SET_PLAYER_INVINCIBLE>(m_player, 1);
         Command<Commands::SET_CAR_DENSITY_MULTIPLIER>(m_pedDensity);
         Command<Commands::SET_PED_DENSITY_MULTIPLIER>(m_pedDensity);
         m_player->m_fHealth = 250.0;
         Command<Commands::SET_MAX_WANTED_LEVEL>(0);
+       
         
 
         if( (CTimer::m_snTimeInMilliseconds - m_keyPressTime) > 500) {
@@ -186,30 +265,27 @@ public:
                 CCheat::VehicleCheat(432);
                 CHud::SetHelpMessage("Spawn Rhino", true, false, false);
             } else if (KeyPressed(VK_SHIFT) && KeyPressed(VK_TAB)) {
-                if (m_vehicle) {
-                    Command<Commands::SET_CAR_HYDRAULICS>(m_vehicle, 1);
-                    Command<Commands::GIVE_NON_PLAYER_CAR_NITRO>(m_vehicle);
-                    m_vehicle->m_nNitroBoosts = 10;
-                }
+                addNitroToCar();
             } else if (KeyPressed('C') && KeyPressed('V')) {
-                m_ghostTown = !m_ghostTown;
-                if (m_ghostTown) {
-                    m_pedDensity = 0.0f;
-                    CHud::SetHelpMessage("Ghosttown On", true, false, false);
-                }
-                else {
-                    m_pedDensity = 1.0f;
-                    CHud::SetHelpMessage("Ghosttown Off", true, false, false);
-                }
-            } else if (KeyPressed('V') && !m_vehicle) {
-                m_jetPackMode = !m_jetPackMode;
-                Command<Commands::FREEZE_CHAR_POSITION>(m_player, m_jetPackMode);
-                if (m_jetPackMode) {
-                    CHud::SetHelpMessage("Jetpack On", true, false, false);
-                }
-                else {
-                    CHud::SetHelpMessage("Jetpack Off", true, false, false);
-                }
+                toggleGhostTown();
+            }
+            else if (KeyPressed('C') && KeyPressed('W')) {
+                changeWeather();
+            }
+            else if (KeyPressed('T') && KeyPressed('F') && KeyPressed('L')) {
+                popTire(eWheels::WHEEL_FRONT_LEFT);
+            }
+            else if (KeyPressed('T') && KeyPressed('F') && KeyPressed('R')) {
+                popTire(eWheels::WHEEL_FRONT_RIGHT);
+            }
+            else if (KeyPressed('T') && KeyPressed('B') && KeyPressed('L')) {
+                popTire(eWheels::WHEEL_REAR_LEFT);
+            }
+            else if (KeyPressed('T') && KeyPressed('B') && KeyPressed('R')) {
+                popTire(eWheels::WHEEL_REAR_RIGHT);
+            }
+            else if (KeyPressed('V') && !m_vehicle) {
+                toggleJetPack();
             } else if (KeyPressed('P') && m_vehicle) {
                  setPositionedVehicle(m_vehicle); 
                  CHud::SetHelpMessage("Saved Positioned Vehicle", true, false, false);
@@ -259,6 +335,11 @@ bool StuntingScript::m_ghostTown;
 CPed* StuntingScript::m_player;
 CVehicle* StuntingScript::m_vehicle;
 float StuntingScript::m_pedDensity;
+
+CVector StuntingScript::m_oldPos;
+
+unsigned StuntingScript::m_currentFrame;
+float StuntingScript::m_speeds[5];
 
 bool StuntingScript::m_posVehicleStored;
 PositionedVehicle StuntingScript::m_posVehicle;
