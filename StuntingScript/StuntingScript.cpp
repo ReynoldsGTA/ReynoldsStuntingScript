@@ -208,9 +208,12 @@ public:
     }
 
     static void popTire(eWheels wheel) {
-        Command<Commands::BURST_CAR_TYRE>(m_vehicle, wheel);
-        CHud::SetHelpMessage("Popped tire", true, false, false);
+        if (m_vehicle) {
+            Command<Commands::BURST_CAR_TYRE>(m_vehicle, wheel);
+            CHud::SetHelpMessage("Popped tire", true, false, false);
+        }
     }
+
 
     static void changeWeather() {
         Command<Commands::FORCE_WEATHER>(eWeatherType::WEATHER_SUNNY_LA);
